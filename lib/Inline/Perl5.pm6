@@ -862,47 +862,6 @@ class Perl6Callbacks {
             }
         }
     }
-    method run_to_end($code) {
-        use nqp;
-        my $compiler = nqp::clone(nqp::getcomp(q<Raku>));
-        my $pos;
-        my $g = $compiler.parsegrammar but role :: {
-            token end_block_and_comp_unit { "}" .* }
-            method typed_panic($type_str, *%opts) {
-                if $type_str eq "X::Syntax::Confused" and substr(self.orig, self.MATCH.pos, 1) eq q<}> {
-                    $pos = self.MATCH.pos;
-                    return self.end_block_and_comp_unit;
-                };
-                $*W.throw(self.MATCH(), nqp::split("::", $type_str), |%opts);
-            }
-        };
-        $compiler.parsegrammar($g);
-
-        my $context := CALLER::;
-        my $eval_ctx := nqp::getattr(nqp::decont($context), PseudoStash, '$!ctx');
-        my \mast_frames := nqp::hash();
-        my $*CTXSAVE; # make sure we don't use the EVAL's MAIN context for the
-                      # currently compiling compilation unit
-
-        my $LANG := $context<%?LANG>:exists
-                        ?? $context<%?LANG>
-                        !! (CALLERS::<%?LANG>:exists ?? CALLERS::<%?LANG> !! Nil);
-        my $*INSIDE-EVAL := 1;
-
-        my $compiled := $compiler.compile:
-            $code,
-            :outer_ctx($eval_ctx),
-            :global(GLOBAL),
-            :mast_frames(mast_frames),
-            :language_version(nqp::getcomp('Raku').language_version);
-
-        nqp::forceouterctx(
-          nqp::getattr($compiled,ForeignCode,'$!do'),$eval_ctx
-        );
-        $compiled();
-
-        $pos
-    }
     method call(Str $name, @args) {
         return &::($name)(|@args);
         CONTROL {
@@ -1230,6 +1189,51 @@ method initialize(Bool :$reinitialize) {
         }
     }
 
+    my &compile_to_end = sub (Str $code, CArray[uint32] $pos --> Pointer) {
+        CATCH {
+            note $_;
+        }
+        use nqp;
+        my $compiler = nqp::clone(nqp::getcomp(q<Raku>));
+        my $*pos;
+        my $g = $compiler.parsegrammar but role :: {
+            token end_block_and_comp_unit { "}" .* }
+            method typed_panic($type_str, *%opts) {
+                if $type_str eq "X::Syntax::Confused" and substr(self.orig, self.MATCH.pos, 1) eq q<}> {
+                    $*pos = self.MATCH.pos;
+                    #note "===>{self.orig.substr(0, $!end-of-raku-code)}<===";
+                    return self.end_block_and_comp_unit;
+                };
+                $*W.throw(self.MATCH(), nqp::split("::", $type_str), |%opts);
+            }
+        };
+        $compiler.parsegrammar($g);
+
+        my $context := CALLER::;
+        my $eval_ctx := nqp::getattr(nqp::decont($context), PseudoStash, '$!ctx');
+        my \mast_frames := nqp::hash();
+        my $*CTXSAVE; # make sure we don't use the EVAL's MAIN context for the
+                      # currently compiling compilation unit
+
+        my $LANG := $context<%?LANG>:exists
+                        ?? $context<%?LANG>
+                        !! (CALLERS::<%?LANG>:exists ?? CALLERS::<%?LANG> !! Nil);
+
+        my $compiled := $compiler.compile:
+            $code,
+            :outer_ctx($eval_ctx),
+            :global(GLOBAL),
+            :mast_frames(mast_frames),
+            :language_version(nqp::getcomp('Raku').language_version);
+
+        nqp::forceouterctx(
+          nqp::getattr($compiled,ForeignCode,'$!do'),$eval_ctx
+        );
+
+        $pos[0] = $*pos;
+        self.p6_to_p5($compiled)
+    }
+
     if ($*W) {
         my $block := {
             my $ps := PseudoStash.new; # Can't just use CALLER:: due to rakudobug
@@ -1248,6 +1252,7 @@ method initialize(Bool :$reinitialize) {
             -> $idx { $!objects.free($idx) },
             &hash_at_key,
             &hash_assign_key,
+            &compile_to_end,
         );
     }
     else {
@@ -1260,6 +1265,7 @@ method initialize(Bool :$reinitialize) {
             -> $idx { $!objects.free($idx) },
             &hash_at_key,
             &hash_assign_key,
+            &compile_to_end,
         );
         X::Inline::Perl5::NoMultiplicity.new.throw unless $!p5.defined;
     }
@@ -1474,12 +1480,6 @@ sub run_to_end {
     $$code = substr($$code, $pos + 1);
 }
 
-use Keyword::Pluggable;
-Keyword::Pluggable::define
-                keyword => 'raku',
-                code    => \&run_to_end,
-                global  => 1,
-            ;
 
 sub call {
     my ($name, @args) = @_;

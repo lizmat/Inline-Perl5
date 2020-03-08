@@ -6,8 +6,10 @@ sub EXPORT(|) {
     my role TestSlang {
         method p5code { 
             my $pos  = self.pos;
-            my $end = Inline::Perl5.default_perl5.compile-to-block-end('{' ~ substr(self.target, $pos)) - 2;
-            $*P5CODE = self.target.substr($pos, *-$end);
+            my $end = Inline::Perl5.default_perl5.compile-to-block-end(
+                    '{' ~ substr(self.target, $pos)
+                ) - 1;
+            $*P5CODE = self.target.substr($pos, * - $end);
             self.'!cursor_pass'(self.target.chars - $end);
             self
         }
