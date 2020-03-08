@@ -256,6 +256,9 @@ class Inline::Perl5::Interpreter is repr('CPointer') {
     method p5_set_global(Str, Pointer) is native($p5helper)
         { ... }
 
+    method p5_compile_sv(Pointer) is native($p5helper)
+        returns int32 { ... }
+
     method p5_eval_pv(Str, int32) is native($p5helper)
         returns Pointer { ... }
 
